@@ -1,0 +1,16 @@
+#!/bin/bash
+
+VIO_ROOT=.
+INC=$VIO_ROOT/include
+SRC=$VIO_ROOT/src
+
+gcc -Wall -g -I$INC $SRC/*.c ./test/*.c
+grep -v "\#" test/in | ./a.out > actual
+grep -v "\#" test/out > expect
+wc=`diff expect actual | wc -l`
+if [ $wc = 0 ]
+then
+  echo "PASS"
+else
+  echo "*** FAIL ***"
+fi
