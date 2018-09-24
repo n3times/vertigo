@@ -5,9 +5,12 @@
 #define MAX_VALUE_EXP 99
 #define MANT_SIZE 13
 
+#define LOC_MANT_END_MANT 10
+#define LOC_MANT_END_EXP 8
+
 /** 10^n */
-static mant_t pow10(n) {
-  mant_t ret = 1LL;
+static int64_t pow10(int n) {
+  int64_t ret = 1;
   for (int i = 0; i < n; i++) {
     ret *= 10;
   }
@@ -24,75 +27,70 @@ static bool is_float(int fix) {
   return fix == -1 || fix == 9;
 }
 
-/** mantissa/number is 0 **/
-static bool is_zero(mant_t mant) {
-  return mant == 0;
+static int max_mant_size(ee_mode_t ee_mode) {
+  return ee_mode == FLEX ? MAX_DISP_MANT : MAX_DISP_MANT_EXP;
 }
 
-static int max_mant_size_for_mode(mode_t mode) {
-  return mode == FLEX ? MAX_DISP_MANT : MAX_DISP_MANT_EXP;
+static int loc_mant_end_for_exp(bool is_exp) {
+  return is_exp ? MAX_DISP_MANT_EXP : MAX_DISP_MANT;
 }
 
-static void display_number(bool is_neg, mant_t mant, int mant_size, 
+static int loc_dp(bool is_exp, int size_mant, int digits_before_point) {
+  int loc_mant_end = loc_mant_end_for_exp(is_exp);
+  return loc_mant_end - size_mant + digits_before_point;
+}
+
+static void display_number(bool is_neg, int64_t disp_mant, int size_mant, 
                            bool is_exp, int exp, int dp, bool overflow,
                            display_t *display) {
-  int end_mant = is_exp ? 8 : 10;
-  int start_mant = end_mant - mant_size + 1;
-  int start_exp = -1;
-  int end_exp = -1;
-  if (is_exp) {
-    start_exp = 9;
-    end_exp = 11;
+  memcpy(display->chars, "            ", 12);
+
+  int loc_mant_end = loc_mant_end_for_exp(is_exp);
+  int loc_mant_start = loc_mant_end - size_mant + 1;
+  int loc_mant_sign = loc_mant_start - 1;
+
+  display->chars[loc_mant_sign] = is_neg ? '-' : ' ';
+  for (int i = loc_mant_end; i >= loc_mant_start; i--) {
+    display->chars[i] = '0' + disp_mant%10;
+    disp_mant /= 10;
   }
-  int pos_sign = start_mant - 1;
- 
-  for (int i = 0; i < 12; i++) {
-    char c = ' ';
-    if (i == pos_sign && is_neg) {
-      c = '-';
-    } else if (i >= start_mant && i <= end_mant) {
-      int d = (mant / pow10(mant_size - i + start_mant - 1)) % 10;
-      c = '0' + d;
-    } else if (i >= start_exp && i <= end_exp) {
-      if (i == 9 && exp < 0) {
-        c = '-';
-      } else if (i == 10) {
-        c = '0' + (ABS(exp) / 10);
-      } else if (i == 11) {
-        c = '0' + (ABS(exp) % 10);
-      }
-    }
-    display->chars[i] = c;
-  } 
+  if (is_exp) {
+    int loc_exp = loc_mant_end + 1;
+    display->chars[loc_exp++] = exp < 0 ? '-' : ' ';
+    display->chars[loc_exp++] = '0' + ABS(exp)/10;
+    display->chars[loc_exp] = '0' + ABS(exp)%10;
+  }
   display->dp = dp;
   display->overflow = overflow;
 }
 
-static void display_zero(int fix, mode_t mode, display_t *display) {
-  int mant_size = 1;
-  if (is_fix(fix)) {
-    mant_size = MIN(1 + fix, max_mant_size_for_mode(mode));
-  }
-  int dp = mode == FLEX ? 10 : 8;
-  dp -= mant_size - 1;
-  return display_number(false, 0, mant_size, mode != FLEX, 0, dp, false,
-                        display);
+static void display_zero(int fix, ee_mode_t ee_mode, display_t *display) {
+  int size_mant = is_float(fix) ? 1 
+                                : MIN(1 + fix, max_mant_size(ee_mode));
+  bool is_neg = 0 < 0;
+  int64_t disp_mant = 0;
+  bool is_exp = ee_mode != FLEX;
+  int exp = 0;
+  int dp = loc_dp(is_exp, size_mant, 1);
+  bool overflow = false;
+  return display_number(is_neg, disp_mant, size_mant,
+                        is_exp, exp, dp, overflow, display);
 }
 
-static void display_overflow(bool neg, int fix, display_t *display) {
-  int mant_size = MAX_DISP_MANT_EXP;
-  if (is_fix(fix)) {
-    mant_size = MIN(1 + fix, mant_size);
-  }
-  mant_t mant = pow10(mant_size) - 1;
-  int dp = 8;
-  dp -= mant_size - 1;
-  return display_number(neg, mant, mant_size, true, MAX_VALUE_EXP, dp, true,
-                        display);
+static void display_overflow(bool is_neg, int fix, display_t *display) {
+  int size_mant = is_float(fix) ? MAX_DISP_MANT_EXP
+                                : MIN(1 + fix, MAX_DISP_MANT_EXP);
+  int64_t disp_mant = pow10(size_mant) - 1;
+  bool is_exp = true;
+  int exp = MAX_VALUE_EXP;
+  int dp = loc_dp(true, size_mant, 1);
+  bool overflow = true;
+  return display_number(is_neg, disp_mant, size_mant,
+                        is_exp, exp, dp, overflow, display);
 }
 
-static bool round_mant(mant_t *mant, int d) {
-  mant_t rounded = *mant;
+static bool mant_extract_digits(int64_t *mant, int d) {
+  int64_t rounded = *mant;
   rounded = (rounded + 5*pow10(MANT_SIZE - d - 1)) / pow10(MANT_SIZE - d);
   *mant = rounded;
 
@@ -100,7 +98,7 @@ static bool round_mant(mant_t *mant, int d) {
   return is_mant_overflow;
 }
 
-static mant_t trim_zeroes(mant_t mant, int *d) {
+static int64_t trim_zeroes(int64_t mant, int *d) {
   int trimmed = 0;
   for (int i = 0; i < *d; i++) {
     if (mant % 10 == 0) {
@@ -114,24 +112,24 @@ static mant_t trim_zeroes(mant_t mant, int *d) {
   return mant;
 }
 
-void number2display(number_t n, int fix, mode_t mode, display_t *display) {
-  mant_t mant = n.mant;
-  mant_t abs_mant = ABS(n.mant);
-  int exp = n.exp;
+void number2display(number_t n, int fix, ee_mode_t ee_mode, display_t *display) {
+  bool is_neg = n.mant < 0;
 
-  if (exp > MAX_VALUE_EXP) {
-    return display_overflow(mant < 0, fix, display);
+  if (n.exp > MAX_VALUE_EXP) {
+    return display_overflow(is_neg, fix, display);
   }
-  if (is_zero(n.mant)) {
-    return display_zero(fix, mode, display);
+  if (n.mant == 0) {
+    return display_zero(fix, ee_mode, display);
   }
-  if (exp >= MAX_DISP_MANT && mode == FLEX) {
-    mode = SCI;
+  if (n.exp >= MAX_DISP_MANT && ee_mode == FLEX) {
+    ee_mode = SCI;
   }
+
+  int exp = n.exp;
 
   // Compute digits_before_point.
   int digits_before_point;
-  switch(mode) {
+  switch(ee_mode) {
   case FLEX:
     digits_before_point = MAX(0, exp + 1);
     break;
@@ -144,53 +142,50 @@ void number2display(number_t n, int fix, mode_t mode, display_t *display) {
     break;
   }
 
-  // Compute mant_size.
-  int mant_size = max_mant_size_for_mode(mode);
+  // Compute max_disp_mant_size.
+  int max_disp_mant_size = max_mant_size(ee_mode);
   if (is_fix(fix)) {
-    mant_size = MIN(mant_size, digits_before_point + fix);
+    max_disp_mant_size = MIN(max_disp_mant_size, digits_before_point + fix);
   }
 
   // Compute zeroes_after_point.
   int zeroes_after_point = 0;
-  if (mode == FLEX && exp < 0) {
-    zeroes_after_point = MIN(-(exp + 1), mant_size);
+  if (ee_mode == FLEX && exp < 0) {
+    zeroes_after_point = MIN(-(exp + 1), max_disp_mant_size);
   }
 
-  // Compute digits_from_mant.        
-  int digits_from_mant = mant_size - zeroes_after_point;
-
-  // Round.
-  bool mant_overflow = round_mant(&abs_mant, digits_from_mant);
+  // Extract significant digits from mantissa.
+  int digits_from_mant = max_disp_mant_size - zeroes_after_point;
+  int64_t mant = ABS(n.mant);
+  bool mant_overflow = mant_extract_digits(&mant, digits_from_mant);
   if (mant_overflow) {
-    n.mant = mant < 0 ? -1000000000000LL
-                      :  1000000000000LL;
+    n.mant = is_neg ? -pow10(MANT_SIZE - 1) : pow10(MANT_SIZE - 1);
     n.exp += 1;
-    return number2display(n, fix, mode, display);
+    return number2display(n, fix, ee_mode, display);
   }
-  if (mode == FLEX && is_zero(abs_mant) && is_float(fix)) {
-    n.exp = exp;
+  if (ee_mode == FLEX && mant == 0 && is_float(fix)) {
     return number2display(n, fix, SCI, display);
   }
 
   // Format.
   bool do_trim_zeroes = is_float(fix);
-  mant_t disp = abs_mant;
-  int disp_size = digits_from_mant;
+  int size_mant = digits_from_mant;
   if (do_trim_zeroes) {
     int trim = digits_from_mant - digits_before_point;
-    disp = trim_zeroes(disp, &trim);
-    disp_size -= trim;
+    mant = trim_zeroes(mant, &trim);
+    size_mant -= trim;
   }
-  disp_size += zeroes_after_point;
-  bool prepend_zero = digits_before_point == 0 && disp_size < MAX_DISP_MANT;
+  size_mant += zeroes_after_point;
+  bool prepend_zero = digits_before_point == 0 && size_mant < MAX_DISP_MANT;
   if (prepend_zero) {
-    disp_size += 1;
+    size_mant += 1;
     digits_before_point += 1;
   }
-  bool is_neg = mant < 0 && !is_zero(disp);
-  int dp = mode == FLEX ? 10 : 8;
-  dp -= disp_size - digits_before_point;
-  return display_number(is_neg, disp, disp_size, 
-                        mode != FLEX, exp, dp, false,
+  bool is_disp_neg = is_neg && mant != 0;
+  bool is_exp = ee_mode != FLEX;
+  int dp = loc_dp(is_exp, size_mant, digits_before_point);
+  bool overflow = false;
+  return display_number(is_disp_neg, mant, size_mant,
+                        ee_mode != FLEX, n.exp, dp, overflow,
                         display);
 }
